@@ -8,7 +8,6 @@ ENV NODE_VERSION=${NODE_VERSION}
 ENV PNPM_VERSION=${PNPM_VERSION}
 
 # ARG default to production settings
-# For development docker-compose file overrides ARGS
 ARG BUNDLE_WITHOUT="development:test"
 ENV BUNDLE_WITHOUT ${BUNDLE_WITHOUT}
 ENV BUNDLER_VERSION=2.5.11
@@ -58,10 +57,7 @@ WORKDIR /app
 
 COPY Gemfile Gemfile.lock ./
 
-# natively compile grpc and protobuf to support alpine musl (dialogflow-docker workflow)
-# https://github.com/googleapis/google-cloud-ruby/issues/13306
-# adding xz as nokogiri was failing to build libxml
-# https://github.com/chatwoot/chatwoot/issues/4045
+# natively compile grpc and protobuf to support alpine musl
 RUN apk update && apk add --no-cache build-base musl ruby-full ruby-dev gcc make musl-dev openssl openssl-dev g++ linux-headers xz vips
 RUN bundle config set --local force_ruby_platform true
 
@@ -76,8 +72,7 @@ RUN pnpm i
 
 COPY . /app
 
-# creating a log directory so that image wont fail when RAILS_LOG_TO_STDOUT is false
-# https://github.com/chatwoot/chatwoot/issues/701
+# creating a log directory so that image won't fail when RAILS_LOG_TO_STDOUT is false
 RUN mkdir -p /app/log
 
 # generate production assets if production environment
@@ -87,13 +82,13 @@ RUN if [ "$RAILS_ENV" = "production" ]; then \
   fi
 
 # Generate .git_sha file with current commit hash
-RUN git rev-parse HEAD > /app/.git_sha
+RUN git rev-parse HEAD > /app/.git_sha || echo "unknown" > /app/.git_sha
 
 # Remove unnecessary files
 RUN rm -rf /gems/ruby/3.3.0/cache/*.gem \
   && find /gems/ruby/3.3.0/gems/ \( -name "*.c" -o -name "*.o" \) -delete \
   && rm -rf .git \
-  && rm .gitignore
+  && rm -f .gitignore
 
 # final build stage
 FROM ruby:3.3.3-alpine3.19
@@ -133,13 +128,9 @@ RUN apk update && apk add --no-cache \
 COPY --from=node /usr/local/bin/node /usr/local/bin/
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
 
-RUN if [ "$RAILS_ENV" != "production" ]; then \
-  apk add --no-cache curl \
-  && ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
   && ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
-  && npm install -g pnpm@${PNPM_VERSION} \
-  && pnpm --version; \
-  fi
+  && npm install -g pnpm@${PNPM_VERSION}
 
 COPY --from=pre-builder /gems/ /gems/
 COPY --from=pre-builder /app /app
@@ -149,4 +140,11 @@ COPY --from=pre-builder /app/.git_sha /app/.git_sha
 
 WORKDIR /app
 
-EXPOSE 3000
+# Create tmp directory for pids
+RUN mkdir -p /app/tmp/pids
+
+# Render expects the app to bind to $PORT which defaults to 10000
+EXPOSE ${PORT:-10000}
+
+# Start the server, binding to 0.0.0.0 and using the PORT env variable from Render
+CMD ["sh", "-c", "bundle exec rails server -b 0.0.0.0 -p ${PORT:-10000}"]
